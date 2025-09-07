@@ -1,0 +1,39 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# production
+/build
+
+# misc
+.DS_Store
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+
+public/media/*.mp4
+public/media/*.webm
+public/media/*.ogg
+public/media/*.mov
+public/media/*.avi
+public/media/*.mkv
+public/media/*.flv
+public/media/*.wmv
+public/media/*.jpg
+public/media/*.jpeg
+public/media/*.png
+public/media/*.gif
+public/media/*.bmp
+public/media/*.webp
