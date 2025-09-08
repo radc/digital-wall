@@ -1,14 +1,18 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { apiJSON, apiUpload } from '../utils/api';
 
-// form helpers
 const emptyDefaults = {
   imageDurationMs: 10000,
   fitMode: 'fit',
   bgColor: '#000000',
   mute: true,
   volume: 1.0,
-  schedule: { days: ['mon','tue','wed','thu','fri','sat','sun'], start: '00:00', end: '23:59', tz: 'America/Sao_Paulo' }
+  schedule: {
+    days: ['mon','tue','wed','thu','fri','sat','sun'],
+    start: '00:00',
+    end: '23:59',
+    tz: 'America/Sao_Paulo'
+  }
 };
 
 const fitModes = ['fit', 'crop', 'fill', 'zoom'];
@@ -24,7 +28,7 @@ export default function Admin() {
   const [files, setFiles] = useState([]);
   const [defaults, setDefaults] = useState(emptyDefaults);
   const [overrides, setOverrides] = useState([]);
-  const [selected, setSelected] = useState(null); // filename
+  const [selected, setSelected] = useState(null); // filename selecionado
 
   // gestão de usuários (admin)
   const [users, setUsers] = useState([]);
@@ -33,6 +37,8 @@ export default function Admin() {
     () => overrides.find(o => o.src === selected) || { src: selected },
     [overrides, selected]
   );
+
+  const usersCardRef = useRef(null);
 
   async function refresh() {
     setLoading(true);
@@ -44,9 +50,16 @@ export default function Admin() {
       setFiles(st.files || []);
       setDefaults({ ...emptyDefaults, ...(st.defaults || {}) });
       setOverrides(st.overrides || []);
-      setUsers(st.users || []); // só vem se for admin
+      setUsers(st.users || []); // só vem se role=admin; se vier vazio, tudo bem
+
+      // Fallback: garante currentUser mesmo se algum proxy filtrar
+      if (!st.currentUser) {
+        try {
+          const me = await apiJSON('/api/me');
+          setCurrentUser(me.user || null);
+        } catch {}
+      }
     } catch (e) {
-      // não autenticado
       setAuth(false);
       setErr(e.message);
     } finally {
@@ -150,7 +163,7 @@ export default function Admin() {
     }
   }
 
-  // --------- Gestão de usuários (apenas admin) ---------
+  // --------- Gestão de usuários (admin) ---------
   async function addUser(e) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
@@ -163,6 +176,7 @@ export default function Admin() {
       alert('Usuário criado');
       e.currentTarget.reset();
       await refresh();
+      usersCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
       alert('Falha ao criar usuário: ' + err.message);
     }
@@ -198,16 +212,28 @@ export default function Admin() {
   if (!auth) {
     return (
       <div style={styles.page}>
-        <form onSubmit={onLogin} style={styles.card}>
+        <form onSubmit={onLogin} style={styles.card} autoComplete="off">
           <h2 style={{marginTop:0}}>Login</h2>
+
           <div style={styles.field}>
             <label>Usuário</label>
-            <input name="username" defaultValue="admin" required />
+            <input
+              name="username"
+              autoComplete="off"   // sem pré-preenchimento
+              required
+            />
           </div>
+
           <div style={styles.field}>
             <label>Senha</label>
-            <input name="password" type="password" defaultValue="1234" required />
+            <input
+              name="password"
+              type="password"
+              autoComplete="new-password" // evita autofill
+              required
+            />
           </div>
+
           <button type="submit" style={styles.btn}>Entrar</button>
           {err && <div style={{color:'crimson', marginTop:8}}>{String(err)}</div>}
         </form>
@@ -221,17 +247,26 @@ export default function Admin() {
     <div style={styles.page}>
       <div style={styles.header}>
         <h2 style={{margin:0}}>Admin do Mural</h2>
-        <div style={{display:'flex', alignItems:'center', gap:12}}>
+        <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
           <span style={{opacity:.8, fontSize:14}}>
             {currentUser?.username} ({currentUser?.role})
           </span>
           <button onClick={refresh} style={styles.btnSecondary}>Atualizar</button>
+          {isAdmin && (
+            <button
+              onClick={() => usersCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              style={styles.btnSecondary}
+              title="Ir para gestão de usuários"
+            >
+              Usuários
+            </button>
+          )}
           <button onClick={onLogout} style={styles.btn}>Sair</button>
         </div>
       </div>
 
       <div style={styles.grid3}>
-        {/* Coluna 1: Arquivos / Upload */}
+        {/* Coluna 1: Arquivos / Upload + Defaults */}
         <div style={styles.col}>
           <div style={styles.card}>
             <h3>Arquivos</h3>
@@ -263,7 +298,7 @@ export default function Admin() {
           </div>
         </div>
 
-        {/* Coluna 2: Override por arquivo */}
+        {/* Coluna 2: Override por arquivo + Minha senha */}
         <div style={styles.col}>
           <div style={styles.card}>
             <h3>Override por arquivo</h3>
@@ -300,13 +335,13 @@ export default function Admin() {
 
         {/* Coluna 3: Gestão de usuários (apenas admin) */}
         <div style={styles.col}>
-          <div style={styles.card}>
+          <div style={styles.card} ref={usersCardRef}>
             <h3>Usuários</h3>
             {!isAdmin && <div>Você não tem permissão para gerenciar usuários.</div>}
             {isAdmin && (
               <>
                 <ul style={{listStyle:'none', padding:0, marginTop:6, maxHeight:220, overflow:'auto'}}>
-                  {users.map(u => (
+                  {(users || []).map(u => (
                     <li key={u.username}
                         style={{display:'flex', gap:8, alignItems:'center', padding:'4px 0', borderBottom:'1px solid #eee'}}>
                       <div style={{fontWeight:600}}>{u.username}</div>
@@ -317,16 +352,16 @@ export default function Admin() {
                       </div>
                     </li>
                   ))}
-                  {users.length === 0 && <li>Nenhum usuário</li>}
+                  {(!users || users.length === 0) && <li>Nenhum usuário</li>}
                 </ul>
 
                 <h4 style={{marginTop:16}}>Novo usuário</h4>
-                <form onSubmit={addUser}>
+                <form onSubmit={addUser} autoComplete="off">
                   <LabeledRow label="Usuário">
-                    <input name="nu_username" required />
+                    <input name="nu_username" autoComplete="off" required />
                   </LabeledRow>
                   <LabeledRow label="Senha">
-                    <input name="nu_password" type="password" required />
+                    <input name="nu_password" type="password" autoComplete="new-password" required />
                   </LabeledRow>
                   <LabeledRow label="Role">
                     <select name="nu_role" defaultValue="user">
@@ -357,31 +392,43 @@ function DefaultsForm({ defaults, setDefaults }) {
   return (
     <div>
       <LabeledRow label="Duração padrão de imagem (ms)">
-        <input type="number" value={d.imageDurationMs ?? 10000}
-               onChange={e => setDefaults({...d, imageDurationMs: Number(e.target.value)})}/>
+        <input
+          type="number"
+          value={d.imageDurationMs ?? 10000}
+          onChange={e => setDefaults({ ...d, imageDurationMs: Number(e.target.value) })}
+        />
       </LabeledRow>
 
       <LabeledRow label="Fit mode padrão">
-        <select value={d.fitMode || 'fit'}
-                onChange={e => setDefaults({...d, fitMode: e.target.value})}>
+        <select
+          value={d.fitMode || 'fit'}
+          onChange={e => setDefaults({ ...d, fitMode: e.target.value })}
+        >
           {fitModes.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       </LabeledRow>
 
       <LabeledRow label="Cor de fundo">
-        <input value={d.bgColor || '#000000'}
-               onChange={e => setDefaults({...d, bgColor: e.target.value})}/>
+        <input
+          value={d.bgColor || '#000000'}
+          onChange={e => setDefaults({ ...d, bgColor: e.target.value })}
+        />
       </LabeledRow>
 
       <LabeledRow label="Mute padrão">
-        <input type="checkbox" checked={!!d.mute}
-               onChange={e => setDefaults({...d, mute: e.target.checked})}/>
+        <input
+          type="checkbox"
+          checked={!!d.mute}
+          onChange={e => setDefaults({ ...d, mute: e.target.checked })}
+        />
       </LabeledRow>
 
       <LabeledRow label="Volume padrão (0..1)">
-        <input type="number" step="0.1" min="0" max="1"
-               value={d.volume ?? 1}
-               onChange={e => setDefaults({...d, volume: Number(e.target.value)})}/>
+        <input
+          type="number" step="0.1" min="0" max="1"
+          value={d.volume ?? 1}
+          onChange={e => setDefaults({ ...d, volume: Number(e.target.value) })}
+        />
       </LabeledRow>
 
       <fieldset style={{border:'1px solid #eee', padding:10, marginTop:10}}>
@@ -389,28 +436,36 @@ function DefaultsForm({ defaults, setDefaults }) {
         <div style={{display:'flex', gap:8, flexWrap:'wrap', marginBottom:8}}>
           {weekDays.map(day => (
             <label key={day} style={{display:'inline-flex', gap:4, alignItems:'center'}}>
-              <input type="checkbox"
-                     checked={(sch.days||weekDays).includes(day)}
-                     onChange={e => {
-                       const set = new Set(sch.days||weekDays);
-                       if (e.target.checked) set.add(day); else set.delete(day);
-                       setDefaults({...d, schedule:{...sch, days:[...set]}});
-                     }}/>
+              <input
+                type="checkbox"
+                checked={(sch.days || weekDays).includes(day)}
+                onChange={e => {
+                  const set = new Set(sch.days || weekDays);
+                  if (e.target.checked) set.add(day); else set.delete(day);
+                  setDefaults({ ...d, schedule: { ...sch, days: [...set] } });
+                }}
+              />
               {day}
             </label>
           ))}
         </div>
         <LabeledRow label="Início (HH:mm)">
-          <input value={sch.start || '00:00'}
-                 onChange={e => setDefaults({...d, schedule:{...sch, start:e.target.value}})} />
+          <input
+            value={sch.start || '00:00'}
+            onChange={e => setDefaults({ ...d, schedule: { ...sch, start: e.target.value } })}
+          />
         </LabeledRow>
         <LabeledRow label="Fim (HH:mm)">
-          <input value={sch.end || '23:59'}
-                 onChange={e => setDefaults({...d, schedule:{...sch, end:e.target.value}})} />
+          <input
+            value={sch.end || '23:59'}
+            onChange={e => setDefaults({ ...d, schedule: { ...sch, end: e.target.value } })}
+          />
         </LabeledRow>
         <LabeledRow label="Timezone">
-          <input value={sch.tz || 'America/Sao_Paulo'}
-                 onChange={e => setDefaults({...d, schedule:{...sch, tz:e.target.value}})} />
+          <input
+            value={sch.tz || 'America/Sao_Paulo'}
+            onChange={e => setDefaults({ ...d, schedule: { ...sch, tz: e.target.value } })}
+          />
         </LabeledRow>
       </fieldset>
     </div>
@@ -428,7 +483,10 @@ function OverrideForm({ value, setValue }) {
       </LabeledRow>
 
       <LabeledRow label="Tipo (auto se vazio)">
-        <select value={v.type || ''} onChange={e => setValue({ ...v, type: e.target.value || undefined })}>
+        <select
+          value={v.type || ''}
+          onChange={e => setValue({ ...v, type: e.target.value || undefined })}
+        >
           <option value="">(auto)</option>
           <option value="image">image</option>
           <option value="video">video</option>
@@ -436,20 +494,33 @@ function OverrideForm({ value, setValue }) {
       </LabeledRow>
 
       <LabeledRow label="Fit mode">
-        <select value={v.fitMode || ''} onChange={e => setValue({ ...v, fitMode: e.target.value || undefined })}>
+        <select
+          value={v.fitMode || ''}
+          onChange={e => setValue({ ...v, fitMode: e.target.value || undefined })}
+        >
           <option value="">(padrão)</option>
           {fitModes.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       </LabeledRow>
 
       <LabeledRow label="Duração de imagem (ms)">
-        <input type="number" value={v.imageDurationMs ?? ''} placeholder="(padrão)"
-               onChange={e => setValue({ ...v, imageDurationMs: e.target.value ? Number(e.target.value) : undefined })}/>
+        <input
+          type="number"
+          value={v.imageDurationMs ?? ''}
+          placeholder="(padrão)"
+          onChange={e =>
+            setValue({ ...v, imageDurationMs: e.target.value ? Number(e.target.value) : undefined })
+          }
+        />
       </LabeledRow>
 
       <LabeledRow label="Mute">
-        <select value={typeof v.mute === 'boolean' ? String(v.mute) : '' }
-                onChange={e => setValue({ ...v, mute: e.target.value === '' ? undefined : e.target.value === 'true' })}>
+        <select
+          value={typeof v.mute === 'boolean' ? String(v.mute) : '' }
+          onChange={e =>
+            setValue({ ...v, mute: e.target.value === '' ? undefined : e.target.value === 'true' })
+          }
+        >
           <option value="">(padrão)</option>
           <option value="true">true</option>
           <option value="false">false</option>
@@ -457,8 +528,13 @@ function OverrideForm({ value, setValue }) {
       </LabeledRow>
 
       <LabeledRow label="Volume (0..1)">
-        <input type="number" step="0.1" min="0" max="1" value={v.volume ?? ''}
-               onChange={e => setValue({ ...v, volume: e.target.value ? Number(e.target.value) : undefined })}/>
+        <input
+          type="number" step="0.1" min="0" max="1"
+          value={v.volume ?? ''}
+          onChange={e =>
+            setValue({ ...v, volume: e.target.value ? Number(e.target.value) : undefined })
+          }
+        />
       </LabeledRow>
 
       <fieldset style={{border:'1px solid #eee', padding:10, marginTop:10}}>
@@ -469,29 +545,46 @@ function OverrideForm({ value, setValue }) {
             const checked = set.has(day);
             return (
               <label key={day} style={{display:'inline-flex', gap:4, alignItems:'center'}}>
-                <input type="checkbox"
-                       checked={checked}
-                       onChange={e => {
-                         const next = new Set(v.schedule?.days || []);
-                         if (e.target.checked) next.add(day); else next.delete(day);
-                         setValue({ ...v, schedule: { ...(v.schedule||{}), days: Array.from(next) } });
-                       }}/>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={e => {
+                    const next = new Set(v.schedule?.days || []);
+                    if (e.target.checked) next.add(day); else next.delete(day);
+                    setValue({ ...v, schedule: { ...(v.schedule || {}), days: Array.from(next) } });
+                  }}
+                />
                 {day}
               </label>
             );
           })}
         </div>
         <LabeledRow label="Início (HH:mm)">
-          <input value={v.schedule?.start || ''}
-                 onChange={e => setValue({ ...v, schedule: { ...(v.schedule||{}), start: e.target.value || undefined } })}/>
+          <input
+            value={v.schedule?.start || ''}
+            onChange={e => setValue({
+              ...v,
+              schedule: { ...(v.schedule || {}), start: e.target.value || undefined }
+            })}
+          />
         </LabeledRow>
         <LabeledRow label="Fim (HH:mm)">
-          <input value={v.schedule?.end || ''}
-                 onChange={e => setValue({ ...v, schedule: { ...(v.schedule||{}), end: e.target.value || undefined } })}/>
+          <input
+            value={v.schedule?.end || ''}
+            onChange={e => setValue({
+              ...v,
+              schedule: { ...(v.schedule || {}), end: e.target.value || undefined }
+            })}
+          />
         </LabeledRow>
         <LabeledRow label="Timezone">
-          <input value={v.schedule?.tz || ''}
-                 onChange={e => setValue({ ...v, schedule: { ...(v.schedule||{}), tz: e.target.value || undefined } })}/>
+          <input
+            value={v.schedule?.tz || ''}
+            onChange={e => setValue({
+              ...v,
+              schedule: { ...(v.schedule || {}), tz: e.target.value || undefined }
+            })}
+          />
         </LabeledRow>
       </fieldset>
     </div>

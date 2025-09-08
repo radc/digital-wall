@@ -12,6 +12,7 @@ const session = require('express-session');
 const multer = require('multer');
 const http = require('http');
 const crypto = require('crypto');
+const os = require('os'); // <-- ADICIONE ESTA LINHA
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -285,6 +286,25 @@ app.get('/api/admin/state', requireAuth, (req, res) => {
   }
 
   res.json(payload);
+});
+
+app.get('/api/local-ips', (_req, res) => {
+  try {
+    const nets = os.networkInterfaces();
+    const ips = [];
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name] || []) {
+        const isV4 = net.family === 'IPv4' || net.family === 4;
+        if (isV4 && !net.internal) ips.push(net.address);
+      }
+    }
+    // fallback: se nada encontrado, pelo menos 127.0.0.1
+    if (ips.length === 0) ips.push('127.0.0.1');
+    res.json({ ips });
+  } catch (e) {
+    console.error('local-ips error', e);
+    res.status(500).json({ ips: [], error: 'local_ips_failed' });
+  }
 });
 
 app.post('/api/admin/defaults', requireAuth, (req, res) => {
