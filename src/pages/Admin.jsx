@@ -19,10 +19,15 @@ export default function Admin() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
+  const [currentUser, setCurrentUser] = useState(null);
+
   const [files, setFiles] = useState([]);
   const [defaults, setDefaults] = useState(emptyDefaults);
   const [overrides, setOverrides] = useState([]);
-  const [selected, setSelected] = useState(null); // filename selecionado
+  const [selected, setSelected] = useState(null); // filename
+
+  // gestão de usuários (admin)
+  const [users, setUsers] = useState([]);
 
   const selectedOverride = useMemo(
     () => overrides.find(o => o.src === selected) || { src: selected },
@@ -35,9 +40,11 @@ export default function Admin() {
     try {
       const st = await apiJSON('/api/admin/state');
       setAuth(true);
+      setCurrentUser(st.currentUser || null);
       setFiles(st.files || []);
       setDefaults({ ...emptyDefaults, ...(st.defaults || {}) });
       setOverrides(st.overrides || []);
+      setUsers(st.users || []); // só vem se for admin
     } catch (e) {
       // não autenticado
       setAuth(false);
@@ -49,6 +56,7 @@ export default function Admin() {
 
   useEffect(() => { refresh(); }, []);
 
+  // --------- Auth ---------
   async function onLogin(e) {
     e.preventDefault();
     setErr('');
@@ -68,6 +76,7 @@ export default function Admin() {
     setAuth(false);
   }
 
+  // --------- Mídias / Config ---------
   async function onUpload(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -125,6 +134,62 @@ export default function Admin() {
     }
   }
 
+  // --------- Minha senha ---------
+  async function changeOwnPassword(e) {
+    e.preventDefault();
+    const data = new FormData(e.currentTarget);
+    const currentPassword = data.get('currentPassword');
+    const newPassword = data.get('newPassword');
+    if (!newPassword) return alert('Informe a nova senha.');
+    try {
+      await apiJSON('/api/me/password', 'POST', { currentPassword, newPassword });
+      alert('Senha alterada com sucesso!');
+      e.currentTarget.reset();
+    } catch (err) {
+      alert('Falha ao trocar senha: ' + err.message);
+    }
+  }
+
+  // --------- Gestão de usuários (apenas admin) ---------
+  async function addUser(e) {
+    e.preventDefault();
+    const data = new FormData(e.currentTarget);
+    const username = data.get('nu_username');
+    const password = data.get('nu_password');
+    const role = data.get('nu_role');
+    if (!username || !password) return alert('Preencha usuário e senha.');
+    try {
+      await apiJSON('/api/users', 'POST', { username, password, role });
+      alert('Usuário criado');
+      e.currentTarget.reset();
+      await refresh();
+    } catch (err) {
+      alert('Falha ao criar usuário: ' + err.message);
+    }
+  }
+
+  async function resetPassword(username) {
+    const newPassword = prompt(`Nova senha para ${username}:`);
+    if (!newPassword) return;
+    try {
+      await apiJSON('/api/users/password', 'POST', { username, newPassword });
+      alert('Senha redefinida.');
+    } catch (err) {
+      alert('Falha ao redefinir senha: ' + err.message);
+    }
+  }
+
+  async function deleteUser(username) {
+    if (!window.confirm(`Remover usuário ${username}?`)) return;
+    try {
+      await apiJSON(`/api/users/${encodeURIComponent(username)}`, 'DELETE');
+      alert('Usuário removido');
+      await refresh();
+    } catch (err) {
+      alert('Falha ao remover: ' + err.message);
+    }
+  }
+
   // --------- UI ---------
   if (loading) {
     return <div style={styles.page}><div style={styles.card}>Carregando…</div></div>;
@@ -150,17 +215,22 @@ export default function Admin() {
     );
   }
 
+  const isAdmin = currentUser?.role === 'admin';
+
   return (
     <div style={styles.page}>
       <div style={styles.header}>
         <h2 style={{margin:0}}>Admin do Mural</h2>
-        <div>
-          <button onClick={refresh} style={styles.btnSecondary}>Atualizar</button>{' '}
+        <div style={{display:'flex', alignItems:'center', gap:12}}>
+          <span style={{opacity:.8, fontSize:14}}>
+            {currentUser?.username} ({currentUser?.role})
+          </span>
+          <button onClick={refresh} style={styles.btnSecondary}>Atualizar</button>
           <button onClick={onLogout} style={styles.btn}>Sair</button>
         </div>
       </div>
 
-      <div style={styles.grid}>
+      <div style={styles.grid3}>
         {/* Coluna 1: Arquivos / Upload */}
         <div style={styles.col}>
           <div style={styles.card}>
@@ -202,9 +272,7 @@ export default function Admin() {
               <OverrideForm
                 value={selectedOverride}
                 setValue={(v) => {
-                  // v tem src incluso; garantimos o src selecionado
                   const withSrc = { ...v, src: selected };
-                  // atualiza localmente sem gravar ainda
                   const others = overrides.filter(o => o.src !== selected);
                   setOverrides([...others, withSrc]);
                 }}
@@ -214,6 +282,62 @@ export default function Admin() {
               <button onClick={saveOverride} style={styles.btn} disabled={!selected}>Salvar override</button>{' '}
               <button onClick={removeOverride} style={styles.btnSecondary} disabled={!selected}>Remover override</button>
             </div>
+          </div>
+
+          <div style={styles.card}>
+            <h3>Minha senha</h3>
+            <form onSubmit={changeOwnPassword}>
+              <LabeledRow label="Senha atual">
+                <input name="currentPassword" type="password" required />
+              </LabeledRow>
+              <LabeledRow label="Nova senha">
+                <input name="newPassword" type="password" required />
+              </LabeledRow>
+              <button type="submit" style={styles.btn}>Trocar minha senha</button>
+            </form>
+          </div>
+        </div>
+
+        {/* Coluna 3: Gestão de usuários (apenas admin) */}
+        <div style={styles.col}>
+          <div style={styles.card}>
+            <h3>Usuários</h3>
+            {!isAdmin && <div>Você não tem permissão para gerenciar usuários.</div>}
+            {isAdmin && (
+              <>
+                <ul style={{listStyle:'none', padding:0, marginTop:6, maxHeight:220, overflow:'auto'}}>
+                  {users.map(u => (
+                    <li key={u.username}
+                        style={{display:'flex', gap:8, alignItems:'center', padding:'4px 0', borderBottom:'1px solid #eee'}}>
+                      <div style={{fontWeight:600}}>{u.username}</div>
+                      <div style={{opacity:.7, fontSize:12}}>{u.role}</div>
+                      <div style={{marginLeft:'auto', display:'flex', gap:6}}>
+                        <button onClick={() => resetPassword(u.username)} style={styles.btnSecondary}>Redefinir senha</button>
+                        <button onClick={() => deleteUser(u.username)} style={styles.dangerBtn}>Remover</button>
+                      </div>
+                    </li>
+                  ))}
+                  {users.length === 0 && <li>Nenhum usuário</li>}
+                </ul>
+
+                <h4 style={{marginTop:16}}>Novo usuário</h4>
+                <form onSubmit={addUser}>
+                  <LabeledRow label="Usuário">
+                    <input name="nu_username" required />
+                  </LabeledRow>
+                  <LabeledRow label="Senha">
+                    <input name="nu_password" type="password" required />
+                  </LabeledRow>
+                  <LabeledRow label="Role">
+                    <select name="nu_role" defaultValue="user">
+                      <option value="user">user</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </LabeledRow>
+                  <button type="submit" style={styles.btn}>Criar usuário</button>
+                </form>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -386,7 +510,7 @@ function LabeledRow({ label, children }) {
 const styles = {
   page: { minHeight:'100vh', background:'#f6f7f9', padding:'20px' },
   header: { display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 },
-  grid: { display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 },
+  grid3: { display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:16 },
   col: { display:'flex', flexDirection:'column', gap:16 },
   card: { background:'#fff', borderRadius:12, boxShadow:'0 2px 10px rgba(0,0,0,.06)', padding:16 },
   field: { display:'flex', gap:8, alignItems:'center', margin:'8px 0' },

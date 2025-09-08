@@ -1,7 +1,7 @@
 // server.js — build + APIs + media + redirect HTTP :80 -> :3001
 // - Serve o build do CRA em / (pasta build/)
 // - Serve APENAS as mídias em /media (public/media)
-// - Rotas /api para manifest, auth e admin (upload/excluir/overrides)
+// - Rotas /api para manifest, auth, admin de mídia e gestão de usuários
 // - SPA fallback que NÃO intercepta /api nem /media
 // - Redirecionador HTTP na porta 80 para http://<host>:3001
 
@@ -10,7 +10,8 @@ const fs = require('fs');
 const path = require('path');
 const session = require('express-session');
 const multer = require('multer');
-const http = require('http'); // para o redirect :80 -> :3001
+const http = require('http');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -21,7 +22,49 @@ const MEDIA_DIR   = path.join(PUBLIC_DIR, 'media');
 const CONFIG_PATH = path.join(MEDIA_DIR, 'media.json');
 const BUILD_DIR   = path.join(ROOT_DIR, 'build'); // saída do CRA (npm run build)
 
-// Extensões suportadas
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> USERS (auth local com hash) <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+const DATA_DIR     = path.join(ROOT_DIR, 'data');
+const USERS_PATH   = path.join(DATA_DIR, 'users.json');
+
+function ensureDirs() {
+  if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+ensureDirs();
+
+function loadUsers() {
+  if (!fs.existsSync(USERS_PATH)) return { users: [] };
+  try {
+    return JSON.parse(fs.readFileSync(USERS_PATH, 'utf8'));
+  } catch {
+    return { users: [] };
+  }
+}
+function saveUsers(db) {
+  fs.writeFileSync(USERS_PATH, JSON.stringify(db, null, 2), 'utf8');
+}
+function makeSalt() {
+  return crypto.randomBytes(16).toString('hex');
+}
+function hashPassword(password, salt) {
+  return crypto.createHash('sha256').update(salt + password).digest('hex');
+}
+function findUser(db, username) {
+  return (db.users || []).find(u => u.username === username);
+}
+function ensureDefaultAdmin() {
+  const db = loadUsers();
+  if (!(db.users || []).some(u => u.role === 'admin')) {
+    const salt = makeSalt();
+    const hash = hashPassword('1234', salt);
+    db.users.push({ username: 'admin', role: 'admin', salt, hash });
+    saveUsers(db);
+    console.log('> Created default admin user: admin / 1234');
+  }
+}
+ensureDefaultAdmin();
+
+// Extensões suportadas para mídia
 const IMAGE_EXT   = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']);
 const VIDEO_EXT   = new Set(['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.wmv', '.flv']);
 const ALLOWED_EXT = new Set([...IMAGE_EXT, ...VIDEO_EXT]);
@@ -53,7 +96,7 @@ if (fs.existsSync(BUILD_DIR)) {
   app.use(express.static(BUILD_DIR));
 }
 
-// --- Helpers de config ---
+// --- Helpers de config do mural ---
 function readConfig() {
   if (!fs.existsSync(CONFIG_PATH)) return { defaults: {}, items: [] };
   try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); }
@@ -63,9 +106,15 @@ function writeConfig(cfg) {
   if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
 }
+
+// --- Auth middlewares ---
 function requireAuth(req, res, next) {
-  if (req.session?.authenticated) return next();
+  if (req.session?.user) return next();
   return res.status(401).json({ error: 'unauthorized' });
+}
+function requireAdmin(req, res, next) {
+  if (req.session?.user?.role === 'admin') return next();
+  return res.status(403).json({ error: 'forbidden' });
 }
 
 // ---------- API: Manifest do Player ----------
@@ -93,31 +142,149 @@ app.get('/api/manifest', (_req, res) => {
   }
 });
 
-// ---------- API: Auth ----------
+// ---------- API: Auth (multiusuário) ----------
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body || {};
-  if (username === 'admin' && password === '1234') {
-    req.session.authenticated = true;
-    return res.json({ ok: true });
-  }
-  return res.status(401).json({ error: 'invalid_credentials' });
+  const db = loadUsers();
+  const user = findUser(db, username);
+  if (!user) return res.status(401).json({ error: 'invalid_credentials' });
+
+  const h = hashPassword(password || '', user.salt);
+  if (h !== user.hash) return res.status(401).json({ error: 'invalid_credentials' });
+
+  req.session.user = { username: user.username, role: user.role };
+  return res.json({ ok: true, user: req.session.user });
 });
+
 app.post('/api/logout', (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 
-// ---------- API: Admin (protegidas) ----------
-app.get('/api/admin/state', requireAuth, (_req, res) => {
+app.get('/api/me', requireAuth, (req, res) => {
+  res.json({ user: req.session.user });
+});
+
+// Trocar a PRÓPRIA senha
+app.post('/api/me/password', requireAuth, (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  const db = loadUsers();
+  const user = findUser(db, req.session.user.username);
+  if (!user) return res.status(404).json({ error: 'user_not_found' });
+  const h = hashPassword(currentPassword || '', user.salt);
+  if (h !== user.hash) return res.status(400).json({ error: 'wrong_password' });
+
+  const newSalt = makeSalt();
+  user.salt = newSalt;
+  user.hash = hashPassword(newPassword || '', newSalt);
+  saveUsers(db);
+  res.json({ ok: true });
+});
+
+// ---------- API: Gestão de usuários (ADMIN) ----------
+// Listar usuários
+app.get('/api/users', requireAuth, requireAdmin, (req, res) => {
+  const db = loadUsers();
+  const list = (db.users || []).map(u => ({ username: u.username, role: u.role }));
+  res.json({ users: list });
+});
+
+// Criar usuário
+app.post('/api/users', requireAuth, requireAdmin, (req, res) => {
+  const { username, password, role } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'username_password_required' });
+  const r = role === 'admin' ? 'admin' : 'user';
+
+  const db = loadUsers();
+  if (findUser(db, username)) return res.status(409).json({ error: 'user_exists' });
+
+  const salt = makeSalt();
+  const hash = hashPassword(password, salt);
+  db.users.push({ username, role: r, salt, hash });
+  saveUsers(db);
+  res.json({ ok: true });
+});
+
+// Trocar senha de OUTRO usuário
+app.post('/api/users/password', requireAuth, requireAdmin, (req, res) => {
+  const { username, newPassword } = req.body || {};
+  if (!username || !newPassword) return res.status(400).json({ error: 'username_newPassword_required' });
+
+  const db = loadUsers();
+  const user = findUser(db, username);
+  if (!user) return res.status(404).json({ error: 'user_not_found' });
+
+  const salt = makeSalt();
+  user.salt = salt;
+  user.hash = hashPassword(newPassword, salt);
+  saveUsers(db);
+  res.json({ ok: true });
+});
+
+// Remover usuário (não pode remover a si mesmo; não pode remover o último admin)
+app.delete('/api/users/:username', requireAuth, requireAdmin, (req, res) => {
+  const username = req.params.username;
+  const db = loadUsers();
+  const me = req.session.user.username;
+
+  const target = findUser(db, username);
+  if (!target) return res.status(404).json({ error: 'user_not_found' });
+
+  if (username === me) return res.status(400).json({ error: 'cannot_delete_self' });
+
+  if (target.role === 'admin') {
+    const admins = (db.users || []).filter(u => u.role === 'admin');
+    if (admins.length <= 1) return res.status(400).json({ error: 'cannot_delete_last_admin' });
+  }
+
+  db.users = (db.users || []).filter(u => u.username !== username);
+  saveUsers(db);
+  res.json({ ok: true });
+});
+
+// ---------- API: Admin do mural (mídias/config) ----------
+app.get('/api/admin/state', requireAuth, (req, res) => {
   const cfg = readConfig();
   const files = fs.existsSync(MEDIA_DIR) ? fs.readdirSync(MEDIA_DIR) : [];
   const mediaFiles = files
     .filter(f => f !== 'media.json' && !f.startsWith('.'))
     .filter(f => ALLOWED_EXT.has(path.extname(f).toLowerCase()));
-  res.json({
+
+  const payload = {
     defaults: cfg.defaults || {},
     overrides: cfg.items || [],
-    files: mediaFiles
-  });
+    files: mediaFiles,
+    currentUser: req.session.user // <<< aqui quebra porque _req != req
+  };
+
+  if (req.session.user?.role === 'admin') {
+    const db = loadUsers();
+    payload.users = (db.users || []).map(u => ({ username: u.username, role: u.role }));
+  }
+
+  res.json(payload);
+});
+
+// POR ISTO:
+app.get('/api/admin/state', requireAuth, (req, res) => {
+  const cfg = readConfig();
+  const files = fs.existsSync(MEDIA_DIR) ? fs.readdirSync(MEDIA_DIR) : [];
+  const mediaFiles = files
+    .filter(f => f !== 'media.json' && !f.startsWith('.'))
+    .filter(f => ALLOWED_EXT.has(path.extname(f).toLowerCase()));
+
+  const payload = {
+    defaults: cfg.defaults || {},
+    overrides: cfg.items || [],
+    files: mediaFiles,
+    currentUser: req.session.user
+  };
+
+  if (req.session.user?.role === 'admin') {
+    const db = loadUsers();
+    payload.users = (db.users || []).map(u => ({ username: u.username, role: u.role }));
+  }
+
+  res.json(payload);
 });
 
 app.post('/api/admin/defaults', requireAuth, (req, res) => {
@@ -140,15 +307,6 @@ app.post('/api/admin/override', requireAuth, (req, res) => {
   res.json({ ok: true, override: items.find(it => it.src === src) });
 });
 
-app.delete('/api/admin/override/:src', requireAuth, (req, res) => {
-  const src = req.params.src;
-  const cfg = readConfig();
-  cfg.items = (cfg.items || []).filter(it => it.src !== src);
-  writeConfig(cfg);
-  res.json({ ok: true });
-});
-
-// Uploads (multer)
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
