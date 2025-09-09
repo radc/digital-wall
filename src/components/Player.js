@@ -1,3 +1,4 @@
+// src/components/Player.js
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isNowInSchedule } from '../utils/schedule';
 
@@ -25,6 +26,7 @@ function toMapBySrc(list = []) {
 }
 
 export default function Player({ manifestUrl = '/api/manifest' }) {
+  const rootRef = useRef(null);
   const [manifest, setManifest] = useState(null);
   const [ready, setReady] = useState(false);
 
@@ -137,6 +139,37 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
     return () => clearTimeout(timerRef.current);
   }, [ready, playlist, index, goNext, defaults.imageDurationMs, defaults.htmlDurationMs]);
 
+  // ======== Fullscreen handling ========
+  const ensureFullscreen = useCallback(async () => {
+    const el = rootRef.current;
+    if (!el) return;
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement;
+    if (fsEl !== el) {
+      try {
+        if (el.requestFullscreen) await el.requestFullscreen({ navigationUI: 'hide' });
+        else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+        else if (el.mozRequestFullScreen) el.mozRequestFullScreen();
+      } catch (e) {
+        // silencioso: navegadores podem bloquear sem gesto do usuário
+      }
+    }
+  }, []);
+
+  // Verifica a cada 20s se não está em fullscreen e tenta aplicar no container
+  useEffect(() => {
+    const iv = setInterval(() => ensureFullscreen(), 20000);
+    return () => clearInterval(iv);
+  }, [ensureFullscreen]);
+
+  // Impede fullscreen nativo do <video> no dblclick (Firefox/Chrome)
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const stopDbl = (e) => { e.preventDefault(); e.stopPropagation(); };
+    v.addEventListener('dblclick', stopDbl, { capture: true });
+    return () => v.removeEventListener('dblclick', stopDbl, { capture: true });
+  }, [index, playlist]);
+
   // atalhos: N (next), R (reload), I/U (overlay IP/QR)
   useEffect(() => {
     const onKey = async (e) => {
@@ -145,7 +178,8 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
       if (k === 'r') window.location.reload();
       if (k === 'i' || k === 'u') {
         e.preventDefault();
-        // toggle overlay
+        // Como é um gesto do usuário, podemos forçar fullscreen no container raiz
+        await ensureFullscreen();
         if (!overlayOpen) {
           try {
             const res = await fetch('/api/local-ip', { cache: 'no-store' });
@@ -166,7 +200,7 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goNext, overlayOpen]);
+  }, [goNext, overlayOpen, ensureFullscreen]);
 
   if (!ready) {
     return <div style={{background:'#000',color:'#000',width:'100vw',height:'100vh'}}/>;
@@ -190,12 +224,13 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
   const item = playlist[index];
   const objectFit = FIT_TO_OBJECT_FIT[item.fitMode] || FIT_TO_OBJECT_FIT.fit;
 
-  // constrói URLs de acesso com base no ip local e porta atual
+  // URLs com IP + porta atual
   const currentPort = window.location.port ? `:${window.location.port}` : '';
   const proto = window.location.protocol || 'http:';
 
   return (
     <div
+      ref={rootRef}
       className={cx('mural-root', fade && 'fade')}
       style={{ width:'100vw', height:'100vh', overflow:'hidden', background:item.bgColor || '#000' }}
     >
@@ -230,6 +265,7 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
             } catch (_) {}
           }}
           style={{ width:'100%', height:'100%', objectFit, outline:'none' }}
+          controls={false}
         />
       )}
 
@@ -252,15 +288,18 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
               )}
               {overlayIPs.map(ip => {
                 const url = `${proto}//${ip}${currentPort}/admin`;
-                const qrSrc = `/api/qr.svg?data=${encodeURIComponent(url)}`;
+                const svgSrc = `/api/qr.svg?data=${encodeURIComponent(url)}`;
                 return (
                   <div className="ip-item" key={ip}>
-                    <img className="ip-qr" src={qrSrc} alt={`QR ${ip}`} 
-                     onError={(e) => {
-                      // fallback para PNG
-                      e.currentTarget.onerror = null;
-                      e.currentTarget.src = `/api/qr?data=${encodeURIComponent(url)}`;
-                    }}
+                    <img
+                      className="ip-qr"
+                      src={svgSrc}
+                      alt={`QR ${ip}`}
+                      onError={(e) => {
+                        // fallback PNG
+                        e.currentTarget.onerror = null;
+                        e.currentTarget.src = `/api/qr?data=${encodeURIComponent(url)}`;
+                      }}
                     />
                     <div className="ip-url">{url}</div>
                   </div>
@@ -281,7 +320,7 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
           position:fixed; inset:0;
           background:rgba(0,0,0,.7);
           display:flex; align-items:center; justify-content:center;
-          z-index: 1000;
+          z-index: 100000; /* MUITO alto para garantir */
           padding: 24px;
         }
         .ip-card{
