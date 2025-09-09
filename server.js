@@ -9,6 +9,8 @@ const express = require('express');
 const session = require('express-session');
 const multer = require('multer');
 const mime = require('mime-types');
+const QRCode = require('qrcode');
+
 const crypto = require('crypto');
 
 const APP_PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
@@ -213,6 +215,19 @@ app.post('/api/logout', (req, res) => {
 
 app.get('/api/me', (req, res) => {
   return res.json({ user: req.session?.user || null });
+});
+
+app.get('/api/qr', async (req, res) => {
+  try {
+    const data = String(req.query.data || '');
+    if (!data) return res.status(400).json({ error: 'missing data' });
+    const png = await QRCode.toBuffer(data, { type: 'png', width: 256, margin: 1 });
+    res.setHeader('Content-Type', 'image/png');
+    res.send(png);
+  } catch (err) {
+    console.error('qr error:', err);
+    res.status(500).json({ error: 'qr failed' });
+  }
 });
 
 // trocar a própria senha

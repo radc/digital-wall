@@ -33,6 +33,11 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
   const timerRef = useRef(null);
   const videoRef = useRef(null);
 
+  // Overlay de IP/QR
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  const [overlayIPs, setOverlayIPs] = useState([]);
+  const overlayTimerRef = useRef(null);
+
   const defaults = useMemo(() => ({
     imageDurationMs: 10000,
     htmlDurationMs: 15000,
@@ -54,7 +59,6 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
 
     const d = { ...defaults, ...(manifest.defaults || {}) };
 
-    // Caminho principal (novo): files + overrides
     let baseFiles = Array.isArray(manifest.files) ? manifest.files : null;
     const overrides = Array.isArray(manifest.overrides) ? manifest.overrides : [];
     const overridesMap = toMapBySrc(overrides);
@@ -65,20 +69,12 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
       items = baseFiles.map((name) => {
         const ov = overridesMap.get(name) || {};
         const type = ov.type || inferType(name);
-        return {
-          ...d,
-          ...ov,
-          src: name,
-          type
-        };
+        return { ...d, ...ov, src: name, type };
       });
     } else if (Array.isArray(manifest.items) && manifest.items.length) {
-      // Fallback para formatos antigos
+      // Fallback antigo
       items = manifest.items.map((it) => ({
-        ...d,
-        ...it,
-        src: it.src,
-        type: it.type || inferType(it.src)
+        ...d, ...it, src: it.src, type: it.type || inferType(it.src)
       }));
     }
 
@@ -109,8 +105,7 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
         const data = await res.json();
         if (!cancelled) {
           setManifest(data);
-          // se o index atual passou do tamanho, reseta
-          setIndex((i) => 0);
+          setIndex(0);
         }
       } catch (e) {
         console.error(e);
@@ -126,8 +121,7 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
 
   // Timer para imagens/HTML
   useEffect(() => {
-    if (!ready) return;
-    if (!playlist.length) return;
+    if (!ready || !playlist.length) return;
 
     const current = playlist[index];
     clearTimeout(timerRef.current);
@@ -138,23 +132,41 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
     } else if (current.type === 'html') {
       const dur = Math.max(500, Number(current.htmlDurationMs || defaults.htmlDurationMs || 15000));
       timerRef.current = setTimeout(goNext, dur);
-    } else {
-      // video: não agenda; avançamos no onEnded / onError
-    }
+    } // video: avança no onEnded/onError
 
     return () => clearTimeout(timerRef.current);
   }, [ready, playlist, index, goNext, defaults.imageDurationMs, defaults.htmlDurationMs]);
 
-  // atalhos: N (next), R (reload)
+  // atalhos: N (next), R (reload), I/U (overlay IP/QR)
   useEffect(() => {
-    const onKey = (e) => {
+    const onKey = async (e) => {
       const k = String(e.key || '').toLowerCase();
       if (k === 'n') goNext();
       if (k === 'r') window.location.reload();
+      if (k === 'i' || k === 'u') {
+        e.preventDefault();
+        // toggle overlay
+        if (!overlayOpen) {
+          try {
+            const res = await fetch('/api/local-ip', { cache: 'no-store' });
+            const data = await res.json();
+            const ips = Array.isArray(data.ips) ? data.ips : [];
+            setOverlayIPs(ips);
+          } catch {
+            setOverlayIPs([]);
+          }
+          setOverlayOpen(true);
+          clearTimeout(overlayTimerRef.current);
+          overlayTimerRef.current = setTimeout(() => setOverlayOpen(false), 10000);
+        } else {
+          setOverlayOpen(false);
+          clearTimeout(overlayTimerRef.current);
+        }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goNext]);
+  }, [goNext, overlayOpen]);
 
   if (!ready) {
     return <div style={{background:'#000',color:'#000',width:'100vw',height:'100vh'}}/>;
@@ -177,6 +189,10 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
 
   const item = playlist[index];
   const objectFit = FIT_TO_OBJECT_FIT[item.fitMode] || FIT_TO_OBJECT_FIT.fit;
+
+  // constrói URLs de acesso com base no ip local e porta atual
+  const currentPort = window.location.port ? `:${window.location.port}` : '';
+  const proto = window.location.protocol || 'http:';
 
   return (
     <div
@@ -225,10 +241,81 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
         />
       )}
 
+      {/* Overlay com IPs + QR */}
+      {overlayOpen && (
+        <div className="ip-overlay" onClick={() => setOverlayOpen(false)}>
+          <div className="ip-card" onClick={e => e.stopPropagation()}>
+            <div className="ip-title">Acesse este mural pela rede</div>
+            <div className="ip-grid">
+              {overlayIPs.length === 0 && (
+                <div className="ip-empty">Sem IPs de rede detectados.</div>
+              )}
+              {overlayIPs.map(ip => {
+                const url = `${proto}//${ip}${currentPort}/admin`;
+                const qrSrc = `/api/qr?data=${encodeURIComponent(url)}`;
+                return (
+                  <div className="ip-item" key={ip}>
+                    <img className="ip-qr" src={qrSrc} alt={`QR ${ip}`} />
+                    <div className="ip-url">{url}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="ip-hint">Pressione I ou U para fechar (fecha em 10s)</div>
+          </div>
+        </div>
+      )}
+
       <style>{`
         .fade { animation: mural-fade 300ms ease both; }
         @keyframes mural-fade { from { opacity: 1 } to { opacity: 0 } }
         * { cursor: none !important; }
+
+        .ip-overlay{
+          position:fixed; inset:0;
+          background:rgba(0,0,0,.7);
+          display:flex; align-items:center; justify-content:center;
+          z-index: 1000;
+          padding: 24px;
+        }
+        .ip-card{
+          background:#0b0f19;
+          color:#fff;
+          border:1px solid rgba(255,255,255,.1);
+          border-radius:16px;
+          box-shadow:0 10px 30px rgba(0,0,0,.4);
+          width:min(92vw, 1100px);
+          max-height: 90vh;
+          overflow:auto;
+          padding:16px;
+          font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif;
+        }
+        .ip-title{
+          font-weight:800; font-size:20px; margin-bottom:12px;
+        }
+        .ip-grid{
+          display:grid; gap:16px;
+          grid-template-columns: 1fr;
+        }
+        @media (min-width: 720px){
+          .ip-grid{ grid-template-columns: repeat(3, 1fr); }
+        }
+        .ip-item{
+          background:#0f172a;
+          border:1px solid rgba(255,255,255,.08);
+          border-radius:12px;
+          padding:12px;
+          display:flex; flex-direction:column; align-items:center; gap:8px;
+        }
+        .ip-qr{
+          width:160px; height:160px; display:block; background:#fff; border-radius:6px;
+        }
+        .ip-url{
+          font-size:14px; word-break:break-all; text-align:center; opacity:.95;
+        }
+        .ip-hint{
+          margin-top:10px; opacity:.7; font-size:12px; text-align:center;
+        }
       `}</style>
     </div>
   );
