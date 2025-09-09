@@ -23,6 +23,9 @@ const BUILD_DIR = path.join(ROOT_DIR, 'build');
 const MEDIA_DIR = path.join(PUBLIC_DIR, 'media');
 const MANIFEST_PATH = path.join(MEDIA_DIR, 'media.json');
 const USERS_PATH = path.join(ROOT_DIR, 'data/users.json');
+const USERS_DIR = path.dirname(USERS_PATH);
+ensureDirSync(USERS_DIR);
+
 
 // ---------- util ----------
 function ensureDirSync(dir) {
@@ -48,10 +51,33 @@ async function readJsonSafe(file, fallback) {
   }
 }
 async function writeJsonSafe(file, obj) {
+  // garante que a pasta exista
+  await fs.mkdir(path.dirname(file), { recursive: true });
+
   const tmp = file + '.tmp';
-  await fs.writeFile(tmp, JSON.stringify(obj, null, 2), 'utf8');
-  await fs.rename(tmp, file);
+  const data = JSON.stringify(obj, null, 2);
+
+  // escreve o temporário no MESMO diretório do destino
+  await fs.writeFile(tmp, data, 'utf8');
+
+  // tenta rename (atômico no mesmo device)
+  try {
+    await fs.rename(tmp, file);
+  } catch (e) {
+    if (e.code === 'EXDEV') {
+      // fallback quando /data está em outro device (NFS, bind mount, etc.)
+      await fs.copyFile(tmp, file);
+      await fs.unlink(tmp);
+    } else if (e.code === 'ENOENT') {
+      // caso raro: diretório removido entre writeFile e rename
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.rename(tmp, file);
+    } else {
+      throw e;
+    }
+  }
 }
+
 
 // inicializa users.json com admin:1234
 async function ensureInitialUsers() {
