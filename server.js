@@ -230,6 +230,20 @@ app.get('/api/qr', async (req, res) => {
   }
 });
 
+app.get('/api/qr.svg', async (req, res) => {
+  try {
+    const data = String(req.query.data || '');
+    if (!data) return res.status(400).send('missing data');
+    const svg = await QRCode.toString(data, { type: 'svg', margin: 1, width: 256 });
+    res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(svg);
+  } catch (err) {
+    console.error('qr svg error:', err);
+    res.status(500).send('qr failed');
+  }
+});
+
 // trocar a própria senha
 app.post('/api/me/password', requireAuth, async (req, res) => {
   const { currentPassword, newPassword } = req.body || {};

@@ -252,10 +252,16 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
               )}
               {overlayIPs.map(ip => {
                 const url = `${proto}//${ip}${currentPort}/admin`;
-                const qrSrc = `/api/qr?data=${encodeURIComponent(url)}`;
+                const qrSrc = `/api/qr.svg?data=${encodeURIComponent(url)}`;
                 return (
                   <div className="ip-item" key={ip}>
-                    <img className="ip-qr" src={qrSrc} alt={`QR ${ip}`} />
+                    <img className="ip-qr" src={qrSrc} alt={`QR ${ip}`} 
+                     onError={(e) => {
+                      // fallback para PNG
+                      e.currentTarget.onerror = null;
+                      e.currentTarget.src = `/api/qr?data=${encodeURIComponent(url)}`;
+                    }}
+                    />
                     <div className="ip-url">{url}</div>
                   </div>
                 );
