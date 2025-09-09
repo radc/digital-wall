@@ -1,8 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isNowInSchedule } from '../utils/schedule';
-import QRCode from 'qrcode';
 
-function classNames(...xs){return xs.filter(Boolean).join(' ');} 
+function cx(...xs){ return xs.filter(Boolean).join(' '); }
 
 const FIT_TO_OBJECT_FIT = {
   fit: 'contain',
@@ -11,253 +10,226 @@ const FIT_TO_OBJECT_FIT = {
   zoom: 'cover'
 };
 
-function isVideo(src){
-  return /\.(mp4|webm|ogg)$/i.test(src);
+function inferType(src) {
+  const s = String(src || '').toLowerCase();
+  if (/\.(mp4|webm|ogg)$/.test(s)) return 'video';
+  if (/\.(html?)$/.test(s)) return 'html';
+  if (/\.(png|jpe?g|gif|webp|bmp|svg)$/.test(s)) return 'image';
+  return 'image';
 }
 
-export default function Player({ manifestUrl = '/api/manifest' }){
+function toMapBySrc(list = []) {
+  const m = new Map();
+  for (const it of list) if (it && it.src) m.set(it.src, it);
+  return m;
+}
+
+export default function Player({ manifestUrl = '/api/manifest' }) {
   const [manifest, setManifest] = useState(null);
-  const [index, setIndex] = useState(0);
   const [ready, setReady] = useState(false);
+
+  const [index, setIndex] = useState(0);
   const [fade, setFade] = useState(false);
   const timerRef = useRef(null);
   const videoRef = useRef(null);
 
-  // overlay de IP + QR
-  const [ipOverlay, setIpOverlay] = useState({ visible:false, text:'', error:false, url:'', qr:'' });
-  const ipTimerRef = useRef(null);
-
-  const defaults = useMemo(()=>({
+  const defaults = useMemo(() => ({
     imageDurationMs: 10000,
+    htmlDurationMs: 15000,
     fitMode: 'fit',
     bgColor: '#000000',
     mute: true,
     volume: 1.0,
-    schedule: null,
-  }),[]);
+    schedule: {
+      days: ['mon','tue','wed','thu','fri','sat','sun'],
+      start: '00:00',
+      end: '23:59',
+      tz: 'America/Sao_Paulo'
+    }
+  }), []);
 
-  const activeItems = useMemo(()=>{
+  // Monta playlist a partir de /api/manifest (files + overrides). Fallback: manifest.items
+  const playlist = useMemo(() => {
     if (!manifest) return [];
-    const d = { ...defaults, ...(manifest.defaults||{}) };
-    const list = (manifest.items||[]).map(it=>({
-      ...d,
-      ...it,
-      type: it.type || (isVideo(it.src) ? 'video' : 'image')
-    }))
-    .filter(it => isNowInSchedule(it.schedule || d.schedule));
-    return list;
+
+    const d = { ...defaults, ...(manifest.defaults || {}) };
+
+    // Caminho principal (novo): files + overrides
+    let baseFiles = Array.isArray(manifest.files) ? manifest.files : null;
+    const overrides = Array.isArray(manifest.overrides) ? manifest.overrides : [];
+    const overridesMap = toMapBySrc(overrides);
+
+    let items = [];
+
+    if (baseFiles && baseFiles.length) {
+      items = baseFiles.map((name) => {
+        const ov = overridesMap.get(name) || {};
+        const type = ov.type || inferType(name);
+        return {
+          ...d,
+          ...ov,
+          src: name,
+          type
+        };
+      });
+    } else if (Array.isArray(manifest.items) && manifest.items.length) {
+      // Fallback para formatos antigos
+      items = manifest.items.map((it) => ({
+        ...d,
+        ...it,
+        src: it.src,
+        type: it.type || inferType(it.src)
+      }));
+    }
+
+    // Filtra por schedule
+    items = items.filter((it) => isNowInSchedule(it.schedule || d.schedule));
+
+    return items;
   }, [manifest, defaults]);
 
   const goNext = useCallback(() => {
+    if (!playlist.length) return;
     setFade(true);
-    window.setTimeout(()=>{
-      setIndex(i => (activeItems.length ? (i+1) % activeItems.length : 0));
+    window.setTimeout(() => {
+      setIndex(i => (i + 1) % playlist.length);
       setFade(false);
     }, 300);
-  }, [activeItems.length]);
+  }, [playlist.length]);
 
-  // carrega manifest e atualiza a cada 60s
-  useEffect(()=>{
+  // Carrega manifest e repete a cada 60s
+  useEffect(() => {
     let cancelled = false;
-    async function load(){
-      try{
-        const res = await fetch(manifestUrl + (manifestUrl.includes('?') ? '&' : '?') + '_=' + Date.now());
-        if(!res.ok) throw new Error('Manifest fetch failed');
+
+    async function load() {
+      try {
+        const url = manifestUrl + (manifestUrl.includes('?') ? '&' : '?') + '_=' + Date.now();
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error('Manifest fetch failed');
         const data = await res.json();
-        if(!cancelled) setManifest(data);
-      }catch(e){
+        if (!cancelled) {
+          setManifest(data);
+          // se o index atual passou do tamanho, reseta
+          setIndex((i) => 0);
+        }
+      } catch (e) {
         console.error(e);
-      }finally{
-        if(!cancelled) setReady(true);
+      } finally {
+        if (!cancelled) setReady(true);
       }
     }
+
     load();
-    const iv = setInterval(load, 60*1000);
-    return ()=>{ cancelled=true; clearInterval(iv); };
+    const iv = setInterval(load, 60 * 1000);
+    return () => { cancelled = true; clearInterval(iv); };
   }, [manifestUrl]);
 
-  // agenda avanço (imagem) ou espera evento (vídeo)
-  useEffect(()=>{
-    if(!ready || !activeItems.length) return;
-    const current = activeItems[index];
+  // Timer para imagens/HTML
+  useEffect(() => {
+    if (!ready) return;
+    if (!playlist.length) return;
 
-    if(current.type === 'image'){
-      const dur = Math.max(1000, current.imageDurationMs || 10000);
-      timerRef.current && clearTimeout(timerRef.current);
+    const current = playlist[index];
+    clearTimeout(timerRef.current);
+
+    if (current.type === 'image') {
+      const dur = Math.max(500, Number(current.imageDurationMs || defaults.imageDurationMs || 10000));
+      timerRef.current = setTimeout(goNext, dur);
+    } else if (current.type === 'html') {
+      const dur = Math.max(500, Number(current.htmlDurationMs || defaults.htmlDurationMs || 15000));
       timerRef.current = setTimeout(goNext, dur);
     } else {
-      timerRef.current && clearTimeout(timerRef.current);
+      // video: não agenda; avançamos no onEnded / onError
     }
-    return ()=>{ timerRef.current && clearTimeout(timerRef.current); };
-  }, [ready, activeItems, index, goNext]);
 
-  // atalhos de teclado
-  useEffect(()=>{
-    const onKey = (e)=>{
-      const k = (e.key||'').toLowerCase();
-      if(k==='n') goNext();
-      if(k==='r') window.location.reload();
-      if(k==='i' || k==='u') showLocalIp();
+    return () => clearTimeout(timerRef.current);
+  }, [ready, playlist, index, goNext, defaults.imageDurationMs, defaults.htmlDurationMs]);
+
+  // atalhos: N (next), R (reload)
+  useEffect(() => {
+    const onKey = (e) => {
+      const k = String(e.key || '').toLowerCase();
+      if (k === 'n') goNext();
+      if (k === 'r') window.location.reload();
     };
     window.addEventListener('keydown', onKey);
-    return ()=> window.removeEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [goNext]);
 
-  // função para buscar IP e mostrar overlay por 10s (com QR do /admin)
-  const showLocalIp = async () => {
-    try {
-      if (ipTimerRef.current) clearTimeout(ipTimerRef.current);
-
-      const res = await fetch('/api/local-ips');
-      if (!res.ok) throw new Error('ip_fetch_failed');
-      const { ips = [] } = await res.json();
-
-      const text = ips.length ? ips.join('  •  ') : 'IP indisponível';
-
-      // monta URL do /admin usando o primeiro IP encontrado
-      const ip = ips[0] || '127.0.0.1';
-      const port =
-        window.location.port
-          ? `:${window.location.port}`
-          : (window.location.protocol === 'https:' ? '' : ':3001'); // fallback comum no seu setup
-      const url = `${window.location.protocol}//${ip}${port}/admin`;
-
-      // gera QR (dataURL) desta URL
-      let qr = '';
-      try {
-        qr = await QRCode.toDataURL(url, { margin: 1, scale: 6 });
-      } catch (e) {
-        console.warn('Erro ao gerar QRCode:', e);
-      }
-
-      setIpOverlay({ visible:true, text, error:false, url, qr });
-
-      ipTimerRef.current = setTimeout(() => {
-        setIpOverlay(o => ({ ...o, visible:false }));
-      }, 10000);
-    } catch (e) {
-      setIpOverlay({ visible:true, text:'Falha ao obter IP local', error:true, url:'', qr:'' });
-      ipTimerRef.current = setTimeout(() => {
-        setIpOverlay(o => ({ ...o, visible:false }));
-      }, 10000);
-    }
-  };
-
-  if(!ready){
+  if (!ready) {
     return <div style={{background:'#000',color:'#000',width:'100vw',height:'100vh'}}/>;
   }
-  if(activeItems.length===0){
+
+  if (playlist.length === 0) {
     return (
-      <div style={{
-        background:'#000',color:'#fff',width:'100vw',height:'100vh',
-        display:'grid',placeItems:'center', position:'relative'
-      }}>
+      <div
+        style={{
+          background:'#000', color:'#fff',
+          width:'100vw', height:'100vh',
+          display:'grid', placeItems:'center',
+          fontFamily:'system-ui, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif'
+        }}
+      >
         Nenhuma mídia disponível no momento
-        {ipOverlay.visible && (
-          <IpOverlay text={ipOverlay.text} error={ipOverlay.error} url={ipOverlay.url} qr={ipOverlay.qr} />
-        )}
       </div>
     );
   }
 
-  const item = activeItems[index];
+  const item = playlist[index];
   const objectFit = FIT_TO_OBJECT_FIT[item.fitMode] || FIT_TO_OBJECT_FIT.fit;
 
   return (
-    <div className={classNames('mural-root', fade && 'fade')}
-      style={{
-        width:'100vw', height:'100vh', overflow:'hidden',
-        background:item.bgColor||'#000', position:'relative'
-      }}
+    <div
+      className={cx('mural-root', fade && 'fade')}
+      style={{ width:'100vw', height:'100vh', overflow:'hidden', background:item.bgColor || '#000' }}
     >
-      {item.type==='image' ? (
+      {item.type === 'image' && (
         <img
-          src={"/media/" + item.src}
+          src={`/media/${encodeURIComponent(item.src)}`}
           alt=""
           draggable={false}
           style={{ width:'100%', height:'100%', objectFit, userSelect:'none' }}
         />
-      ) : (
+      )}
+
+      {item.type === 'video' && (
         <video
           key={item.src}
           ref={videoRef}
-          src={"/media/" + item.src}
+          src={`/media/${encodeURIComponent(item.src)}`}
           autoPlay
           playsInline
           muted={!!item.mute}
           onEnded={goNext}
           onError={goNext}
           onLoadedMetadata={() => {
-            try{
-              if(videoRef.current){
+            try {
+              if (videoRef.current) {
                 videoRef.current.currentTime = 0;
-                videoRef.current.volume = Math.max(0, Math.min(1, item.volume ?? 1));
+                const vol = Number(item.volume);
+                if (!Number.isNaN(vol)) {
+                  videoRef.current.volume = Math.min(1, Math.max(0, vol));
+                }
               }
-            }catch(e){}
+            } catch (_) {}
           }}
           style={{ width:'100%', height:'100%', objectFit, outline:'none' }}
         />
       )}
 
-      {/* Overlay de IP + QR (10s ao apertar "i" ou "u") */}
-      {ipOverlay.visible && (
-        <IpOverlay text={ipOverlay.text} error={ipOverlay.error} url={ipOverlay.url} qr={ipOverlay.qr} />
+      {item.type === 'html' && (
+        <iframe
+          title={`html-${item.src}`}
+          src={`/media/${encodeURIComponent(item.src)}`}
+          style={{ width:'100%', height:'100%', border:0, display:'block', background:'#000' }}
+        />
       )}
 
       <style>{`
         .fade { animation: mural-fade 300ms ease both; }
-        @keyframes mural-fade { from { opacity: 1 } to { opacity: 0.0 } }
+        @keyframes mural-fade { from { opacity: 1 } to { opacity: 0 } }
         * { cursor: none !important; }
       `}</style>
-    </div>
-  );
-}
-
-function IpOverlay({ text, error, url, qr }) {
-  return (
-    <div
-      style={{
-        position:'absolute',
-        left:'50%',
-        top:20,
-        transform:'translateX(-50%)',
-        background: error ? 'rgba(220,38,38,.95)' : 'rgba(17,24,39,.9)',
-        color:'#fff',
-        padding:'12px 16px',
-        borderRadius:12,
-        boxShadow:'0 6px 24px rgba(0,0,0,.35)',
-        zIndex: 9999,
-        border: '1px solid rgba(255,255,255,.15)',
-        display:'flex',
-        alignItems:'center',
-        gap:12,
-        maxWidth:'92vw'
-      }}
-      title={text}
-    >
-      {qr ? (
-        <img
-          src={qr}
-          alt={url}
-          style={{ width:92, height:92, borderRadius:8, background:'#fff', padding:6 }}
-        />
-      ) : null}
-      <div style={{ display:'flex', flexDirection:'column', gap:6, minWidth:0 }}>
-        <div style={{
-          fontSize:18, fontWeight:700, letterSpacing:.2,
-          whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'
-        }}>
-          {text}
-        </div>
-        {url && (
-          <div style={{ fontSize:14, opacity:.9, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-            URL admin: <span style={{fontFamily:'monospace'}}>{url}</span>
-          </div>
-        )}
-        <div style={{ fontSize:12, opacity:.7 }}>
-          Dica: pressione <b>i</b> ou <b>u</b> para mostrar este painel.
-        </div>
-      </div>
     </div>
   );
 }

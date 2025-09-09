@@ -37,5 +37,6 @@ public/media/*.png
 public/media/*.gif
 public/media/*.bmp
 public/media/*.webp
+public/media/*.html
 
 data/users.json
