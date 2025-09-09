@@ -1,4 +1,3 @@
-// src/components/Player.js
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isNowInSchedule } from '../utils/schedule';
 
@@ -27,13 +26,15 @@ function toMapBySrc(list = []) {
 
 export default function Player({ manifestUrl = '/api/manifest' }) {
   const rootRef = useRef(null);
+  const videoRef = useRef(null);
+  const iframeRef = useRef(null);
+
   const [manifest, setManifest] = useState(null);
   const [ready, setReady] = useState(false);
 
   const [index, setIndex] = useState(0);
   const [fade, setFade] = useState(false);
   const timerRef = useRef(null);
-  const videoRef = useRef(null);
 
   // Overlay de IP/QR
   const [overlayOpen, setOverlayOpen] = useState(false);
@@ -58,7 +59,6 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
   // Monta playlist a partir de /api/manifest (files + overrides). Fallback: manifest.items
   const playlist = useMemo(() => {
     if (!manifest) return [];
-
     const d = { ...defaults, ...(manifest.defaults || {}) };
 
     let baseFiles = Array.isArray(manifest.files) ? manifest.files : null;
@@ -66,7 +66,6 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
     const overridesMap = toMapBySrc(overrides);
 
     let items = [];
-
     if (baseFiles && baseFiles.length) {
       items = baseFiles.map((name) => {
         const ov = overridesMap.get(name) || {};
@@ -82,7 +81,6 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
 
     // Filtra por schedule
     items = items.filter((it) => isNowInSchedule(it.schedule || d.schedule));
-
     return items;
   }, [manifest, defaults]);
 
@@ -98,41 +96,35 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
   // Carrega manifest e repete a cada 60s
   useEffect(() => {
     let cancelled = false;
-
     async function load() {
       try {
         const url = manifestUrl + (manifestUrl.includes('?') ? '&' : '?') + '_=' + Date.now();
         const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) throw new Error('Manifest fetch failed');
         const data = await res.json();
-        if (!cancelled) {
-          setManifest(data);
-          setIndex(0);
-        }
+        if (!cancelled) { setManifest(data); setIndex(0); }
       } catch (e) {
         console.error(e);
       } finally {
         if (!cancelled) setReady(true);
       }
     }
-
     load();
     const iv = setInterval(load, 60 * 1000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [manifestUrl]);
 
-  // Timer para imagens/HTML
+  // Timers de imagem/HTML
   useEffect(() => {
     if (!ready || !playlist.length) return;
-
     const current = playlist[index];
     clearTimeout(timerRef.current);
 
     if (current.type === 'image') {
-      const dur = Math.max(500, Number(current.imageDurationMs || defaults.imageDurationMs || 10000));
+      const dur = Math.max(500, Number(current.imageDurationMs ?? defaults.imageDurationMs ?? 10000));
       timerRef.current = setTimeout(goNext, dur);
     } else if (current.type === 'html') {
-      const dur = Math.max(500, Number(current.htmlDurationMs || defaults.htmlDurationMs || 15000));
+      const dur = Math.max(500, Number(current.htmlDurationMs ?? defaults.htmlDurationMs ?? 15000));
       timerRef.current = setTimeout(goNext, dur);
     } // video: avança no onEnded/onError
 
@@ -149,19 +141,17 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
         if (el.requestFullscreen) await el.requestFullscreen({ navigationUI: 'hide' });
         else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
         else if (el.mozRequestFullScreen) el.mozRequestFullScreen();
-      } catch (e) {
-        // silencioso: navegadores podem bloquear sem gesto do usuário
-      }
+      } catch {}
     }
   }, []);
 
-  // Verifica a cada 20s se não está em fullscreen e tenta aplicar no container
+  // Verifica a cada 20s se não está em fullscreen e tenta aplicar
   useEffect(() => {
     const iv = setInterval(() => ensureFullscreen(), 20000);
     return () => clearInterval(iv);
   }, [ensureFullscreen]);
 
-  // Impede fullscreen nativo do <video> no dblclick (Firefox/Chrome)
+  // Evita fullscreen nativo de <video> no dblclick (Firefox/Chrome)
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -170,37 +160,89 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
     return () => v.removeEventListener('dblclick', stopDbl, { capture: true });
   }, [index, playlist]);
 
-  // atalhos: N (next), R (reload), I/U (overlay IP/QR)
+  // === Toggle overlay: usado por atalho e por postMessage do iframe ===
+  const toggleOverlay = useCallback(async () => {
+    await ensureFullscreen(); // gesto do usuário garantido em keydown; no postMessage pode simplesmente falhar silencioso
+    if (!overlayOpen) {
+      try {
+        const res = await fetch('/api/local-ip', { cache: 'no-store' });
+        const data = await res.json();
+        const ips = Array.isArray(data.ips) ? data.ips : [];
+        setOverlayIPs(ips);
+      } catch {
+        setOverlayIPs([]);
+      }
+      setOverlayOpen(true);
+      clearTimeout(overlayTimerRef.current);
+      overlayTimerRef.current = setTimeout(() => setOverlayOpen(false), 10000);
+    } else {
+      setOverlayOpen(false);
+      clearTimeout(overlayTimerRef.current);
+    }
+  }, [overlayOpen, ensureFullscreen]);
+
+  // atalhos globais (imagem/vídeo e quando foco está no documento)
   useEffect(() => {
-    const onKey = async (e) => {
+    const onKey = (e) => {
       const k = String(e.key || '').toLowerCase();
       if (k === 'n') goNext();
       if (k === 'r') window.location.reload();
-      if (k === 'i' || k === 'u') {
-        e.preventDefault();
-        // Como é um gesto do usuário, podemos forçar fullscreen no container raiz
-        await ensureFullscreen();
-        if (!overlayOpen) {
-          try {
-            const res = await fetch('/api/local-ip', { cache: 'no-store' });
-            const data = await res.json();
-            const ips = Array.isArray(data.ips) ? data.ips : [];
-            setOverlayIPs(ips);
-          } catch {
-            setOverlayIPs([]);
-          }
-          setOverlayOpen(true);
-          clearTimeout(overlayTimerRef.current);
-          overlayTimerRef.current = setTimeout(() => setOverlayOpen(false), 10000);
-        } else {
-          setOverlayOpen(false);
-          clearTimeout(overlayTimerRef.current);
-        }
-      }
+      if (k === 'i' || k === 'u') { e.preventDefault(); toggleOverlay(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goNext, overlayOpen, ensureFullscreen]);
+  }, [goNext, toggleOverlay]);
+
+  // recebe pedidos do iframe (quando o foco está dentro do HTML)
+  useEffect(() => {
+    const onMsg = (e) => {
+      if (e?.data && e.data.type === 'mural:toggle-overlay') {
+        toggleOverlay();
+      }
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [toggleOverlay]);
+
+  // injeta listener de keydown dentro do iframe (mesma origem) para repassar i/u
+  useEffect(() => {
+    const current = playlist[index];
+    if (!current || current.type !== 'html') return;
+    const ifr = iframeRef.current;
+    if (!ifr) return;
+
+    const attach = () => {
+      try {
+        const doc = ifr.contentDocument || ifr.contentWindow?.document;
+        if (!doc) return;
+        const handler = (e) => {
+          const k = String(e.key || '').toLowerCase();
+          if (k === 'i' || k === 'u') {
+            e.preventDefault();
+            ifr.contentWindow?.parent?.postMessage({ type: 'mural:toggle-overlay' }, '*');
+          }
+        };
+        doc.addEventListener('keydown', handler);
+        // guarda para cleanup
+        ifr._muralHandler = handler;
+      } catch {}
+    };
+
+    // se já carregou, injeta; senão espera load
+    if (ifr.contentDocument?.readyState === 'complete') {
+      attach();
+    } else {
+      ifr.addEventListener('load', attach, { once: true });
+    }
+
+    return () => {
+      try {
+        const doc = ifr.contentDocument || ifr.contentWindow?.document;
+        const h = ifr._muralHandler;
+        if (doc && h) doc.removeEventListener('keydown', h);
+      } catch {}
+    };
+  }, [index, playlist]);
 
   if (!ready) {
     return <div style={{background:'#000',color:'#000',width:'100vw',height:'100vh'}}/>;
@@ -224,7 +266,6 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
   const item = playlist[index];
   const objectFit = FIT_TO_OBJECT_FIT[item.fitMode] || FIT_TO_OBJECT_FIT.fit;
 
-  // URLs com IP + porta atual
   const currentPort = window.location.port ? `:${window.location.port}` : '';
   const proto = window.location.protocol || 'http:';
 
@@ -233,6 +274,7 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
       ref={rootRef}
       className={cx('mural-root', fade && 'fade')}
       style={{ width:'100vw', height:'100vh', overflow:'hidden', background:item.bgColor || '#000' }}
+      tabIndex={0}
     >
       {item.type === 'image' && (
         <img
@@ -251,6 +293,7 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
           autoPlay
           playsInline
           muted={!!item.mute}
+          controls={false}
           onEnded={goNext}
           onError={goNext}
           onLoadedMetadata={() => {
@@ -262,17 +305,18 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
                   videoRef.current.volume = Math.min(1, Math.max(0, vol));
                 }
               }
-            } catch (_) {}
+            } catch {}
           }}
           style={{ width:'100%', height:'100%', objectFit, outline:'none' }}
-          controls={false}
         />
       )}
 
       {item.type === 'html' && (
         <iframe
+          ref={iframeRef}
           title={`html-${item.src}`}
           src={`/media/${encodeURIComponent(item.src)}`}
+          tabIndex={-1}
           style={{ width:'100%', height:'100%', border:0, display:'block', background:'#000' }}
         />
       )}
@@ -296,7 +340,6 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
                       src={svgSrc}
                       alt={`QR ${ip}`}
                       onError={(e) => {
-                        // fallback PNG
                         e.currentTarget.onerror = null;
                         e.currentTarget.src = `/api/qr?data=${encodeURIComponent(url)}`;
                       }}
@@ -320,7 +363,7 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
           position:fixed; inset:0;
           background:rgba(0,0,0,.7);
           display:flex; align-items:center; justify-content:center;
-          z-index: 100000; /* MUITO alto para garantir */
+          z-index: 100000;
           padding: 24px;
         }
         .ip-card{
