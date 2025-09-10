@@ -1,4 +1,4 @@
-# Digital Mural (React + Node)
+# Digital Wall (React + Node)
 
 A digital signage application built with **Create React App** (frontend) and **Node/Express** (backend).
 It plays **images, videos, and HTML notices** from a local folder, lets you **manage media and settings via an /admin panel**, and supports **multi-user authentication** with salted SHA-256 password hashes stored locally.
@@ -38,7 +38,7 @@ It plays **images, videos, and HTML notices** from a local folder, lets you **ma
 ## 🧱 Project Structure (suggested)
 
 ```
-digital-mural/
+digital-wall/
 ├─ server.js                 # Express server (APIs, static, redirect :80→:3001)
 ├─ ecosystem.config.js       # PM2 app configuration
 ├─ package.json
@@ -153,7 +153,7 @@ Create `kiosk-start.sh` and make it executable:
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="/path/to/digital-mural"   # <-- change this
+APP_DIR="/path/to/digital-wall"   # <-- change this
 APP_URL="http://localhost:3001"    # or "http://localhost:3001/admin"
 
 cd "$APP_DIR"
