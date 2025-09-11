@@ -36,6 +36,10 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
   const [fade, setFade] = useState(false);
   const timerRef = useRef(null);
 
+  // guarda o src atual para preservar posição após reload do manifest
+  const prevSrcRef = useRef(null);
+  const lastSigRef = useRef(null); // última assinatura do manifest
+
   // Overlay de IP/QR
   const [overlayOpen, setOverlayOpen] = useState(false);
   const [overlayIPs, setOverlayIPs] = useState([]);
@@ -84,6 +88,23 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
     return items;
   }, [manifest, defaults]);
 
+  // Assinatura do manifest relevante (para detectar mudanças reais)
+  const manifestSig = useMemo(() => {
+    if (!manifest) return null;
+    // só os campos que impactam a playlist
+    return JSON.stringify({
+      d: manifest.defaults || null,
+      o: manifest.overrides || [],
+      f: manifest.files || []
+    });
+  }, [manifest]);
+
+  // Atualiza referência ao src atual (para preservar posição em reload)
+  useEffect(() => {
+    const curr = playlist[index]?.src || null;
+    prevSrcRef.current = curr;
+  }, [playlist, index]);
+
   const goNext = useCallback(() => {
     if (!playlist.length) return;
     setFade(true);
@@ -93,26 +114,49 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
     }, 300);
   }, [playlist.length]);
 
-  // Carrega manifest e repete a cada 60s
+  // Carrega manifest e repete a cada 60s (sem resetar index)
   useEffect(() => {
     let cancelled = false;
+
     async function load() {
       try {
         const url = manifestUrl + (manifestUrl.includes('?') ? '&' : '?') + '_=' + Date.now();
         const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) throw new Error('Manifest fetch failed');
         const data = await res.json();
-        if (!cancelled) { setManifest(data); setIndex(0); }
+        if (!cancelled) {
+          setManifest(data); // NÃO faz setIndex(0) aqui
+        }
       } catch (e) {
         console.error(e);
       } finally {
         if (!cancelled) setReady(true);
       }
     }
+
     load();
     const iv = setInterval(load, 60 * 1000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [manifestUrl]);
+
+  // Quando o manifest realmente muda, tenta manter o mesmo src atual
+  useEffect(() => {
+    if (!ready || !playlist.length || !manifestSig) return;
+
+    if (lastSigRef.current === manifestSig) return; // nada mudou
+    lastSigRef.current = manifestSig;
+
+    const currSrc = prevSrcRef.current;
+    if (!currSrc) return; // primeiro load, deixa index como está (0)
+
+    const newIdx = playlist.findIndex(it => it.src === currSrc);
+    if (newIdx >= 0) {
+      setIndex(newIdx);
+    } else {
+      // src atual saiu da pasta; mantém um índice válido
+      setIndex(i => Math.min(i, Math.max(0, playlist.length - 1)));
+    }
+  }, [ready, playlist, manifestSig]);
 
   // Timers de imagem/HTML
   useEffect(() => {
@@ -223,12 +267,10 @@ export default function Player({ manifestUrl = '/api/manifest' }) {
           }
         };
         doc.addEventListener('keydown', handler);
-        // guarda para cleanup
         ifr._muralHandler = handler;
       } catch {}
     };
 
-    // se já carregou, injeta; senão espera load
     if (ifr.contentDocument?.readyState === 'complete') {
       attach();
     } else {
