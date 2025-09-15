@@ -559,7 +559,7 @@ function makeDeadlineHtml({
   }
   h1{
     margin:0 0 12px;
-    font-size: clamp(20px, 4vw, 40px);
+    font-size: 80px;
     letter-spacing: .3px;
   }
   .when{
