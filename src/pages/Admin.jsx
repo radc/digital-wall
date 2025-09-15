@@ -28,6 +28,7 @@ const weekDays = ['mon','tue','wed','thu','fri','sat','sun'];
 const VIEWS = [
   { key: 'media',    label: 'Arquivos + Overrides' },
   { key: 'notice',   label: 'Aviso Rápido (HTML)' },
+  { key: 'deadline', label: 'Novo Deadline' },     // <- aqui estava "id", trocamos por "key"
   { key: 'defaults', label: 'Configurações Padrão' },
   { key: 'users',    label: 'Usuários' },
   { key: 'password', label: 'Alterar Senha' },
@@ -97,6 +98,309 @@ function makeHtmlDoc({
 </body>
 </html>`;
 }
+
+// (B) ==== DeadlineTab: cria um HTML de contagem regressiva e salva no /media ====
+function toLocalISOWithOffsetFromInputs(dateStr, timeStr){
+  // dateStr: "YYYY-MM-DD", timeStr: "HH:MM"
+  const [Y, M, D] = (dateStr || '').split('-').map(Number);
+  const [h, m] = (timeStr || '00:00').split(':').map(Number);
+  if (!Y || !M || !D) return null;
+  const d = new Date(Y, (M-1), D, h||0, m||0, 0, 0); // horário local
+  const off = -d.getTimezoneOffset(); // min
+  const sign = off >= 0 ? '+' : '-';
+  const pad = (n)=> String(Math.floor(Math.abs(n))).padStart(2,'0');
+  const hh = pad(off/60);
+  const mm = pad(off%60);
+  const yyyy = d.getFullYear();
+  const MM = pad(d.getMonth()+1);
+  const DD = pad(d.getDate());
+  const HH = pad(d.getHours());
+  const MMm = pad(d.getMinutes());
+  return `${yyyy}-${MM}-${DD}T${HH}:${MMm}${sign}${hh}:${mm}`;
+}
+
+function makeDeadlineHtmlClient(cfg){
+  // Gera o mesmo HTML do server para PREVIEW (com logo opcional)
+  const json = JSON.stringify(cfg).replace(/</g,'\\u003c');
+  return `<!doctype html><html lang="pt-BR"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${cfg.title||'Evento'}</title>
+<style>
+:root{--bg:${cfg.bgColor||'#000'};--fg:${cfg.textColor||'#fff'};--accent:${cfg.accentColor||'#ffffff'};}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font-family:${cfg.fontFamily||'system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif'};
+  display:flex;align-items:center;justify-content:center
+}
+.wrap{box-sizing:border-box;width:100%;max-width:1200px;padding:24px;text-align:center}
+.brand{margin-bottom:16px;display:flex;justify-content:center}
+.brand .logo{height:clamp(28px,6vw,56px);width:auto;display:block;filter:drop-shadow(0 4px 18px rgba(0,0,0,.25))}
+h1{margin:0 0 12px;font-size:80px;letter-spacing:.3px}
+.when{opacity:.85;margin-bottom:20px;font-size:clamp(14px,2.4vw,18px)}
+.clock{display:flex;gap:14px;justify-content:center;align-items:stretch;flex-wrap:wrap}
+.block{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:14px;min-width:120px;padding:16px 10px}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum";font-size:clamp(34px,9vw,84px);font-weight:800;line-height:1;color:var(--accent);text-shadow:0 2px 14px rgba(34,197,94,.25)}
+.lab{margin-top:8px;font-size:clamp(12px,2.2vw,16px);opacity:.85}
+.done{margin-top:14px;font-weight:700;color:var(--accent);font-size:clamp(16px,3.6vw,22px)}
+</style>
+</head><body>
+<div class="wrap">
+  ${cfg.logoPath ? `<div class="brand"><img class="logo" src="${cfg.logoPath}" alt="logo"/></div>` : ''}
+  <h1 id="t"></h1><div class="when" id="w"></div>
+  <div class="clock" id="c" hidden>
+    <div class="block"><div class="num" id="d">0</div><div class="lab">dias</div></div>
+    <div class="block"><div class="num" id="h">00</div><div class="lab">horas</div></div>
+    <div class="block"><div class="num" id="m">00</div><div class="lab">min</div></div>
+    <div class="block"><div class="num" id="s">00</div><div class="lab">seg</div></div>
+  </div>
+  <div class="done" id="done" hidden>Encerrado</div>
+</div>
+<script id="CFG" type="application/json">${json}</script>
+<script>
+(function(){
+  const cfg = JSON.parse(document.getElementById('CFG').textContent);
+  const elT = document.getElementById('t');
+  const elW = document.getElementById('w');
+  const elC = document.getElementById('c');
+  const elD = document.getElementById('d');
+  const elH = document.getElementById('h');
+  const elM = document.getElementById('m');
+  const elS = document.getElementById('s');
+  const elDone = document.getElementById('done');
+  elT.textContent = cfg.title || 'Evento';
+  const dl = new Date(cfg.deadlineISO || new Date().toISOString());
+  try{
+    const fmt = new Intl.DateTimeFormat(undefined,{dateStyle:'full',timeStyle:'short'});
+    elW.textContent = 'Prazo: ' + fmt.format(dl);
+  }catch{ elW.textContent = 'Prazo: ' + dl.toString(); }
+  function pad2(n){n=Math.floor(n);return (n<10?'0':'')+n;}
+  function tick(){
+    const now=new Date(); let diff=dl.getTime()-now.getTime();
+    if(diff<=0){ elC.hidden=true; elDone.hidden=false; return; }
+    elC.hidden=false; elDone.hidden=true;
+    const s=Math.floor(diff/1000), d=Math.floor(s/86400), h=Math.floor((s%86400)/3600),
+          m=Math.floor((s%3600)/60), sec=s%60;
+    elD.textContent=d; elH.textContent=pad2(h); elM.textContent=pad2(m); elS.textContent=pad2(sec);
+  }
+  tick(); setInterval(tick,1000);
+})();
+</script>
+</body></html>`;
+}
+
+// === SUBSTITUA APENAS ESTE COMPONENTE NO Admin.jsx ===
+function DeadlineTab({ files = [], onCreated, refreshState }) {
+  const [title, setTitle] = React.useState('');
+  const [dateStr, setDateStr] = React.useState('');     // YYYY-MM-DD (obrigatório)
+  const [timeStr, setTimeStr] = React.useState('');     // HH:MM (se vazio, assume 00:00)
+  const [bgColor, setBgColor] = React.useState('#01aeef');
+  const [textColor, setTextColor] = React.useState('#ffffff');
+  const [accentColor, setAccentColor] = React.useState('#ffffff');
+  const [logoSrc, setLogoSrc] = React.useState('');     // nome do .svg em /media
+  const [filename, setFilename] = React.useState('');   // nome opcional .html
+
+  // SVGs disponíveis na pasta /media
+  const svgFiles = React.useMemo(
+    () => (files || []).filter(f => /\.svg$/i.test(f)),
+    [files]
+  );
+
+  // Validação simples
+  const errors = React.useMemo(() => {
+    const e = {};
+    if (!title.trim()) e.title = 'Informe o nome do evento';
+    if (!dateStr) e.dateStr = 'Informe a data do deadline';
+    return e;
+  }, [title, dateStr]);
+
+  // Config para o preview
+  const cfg = React.useMemo(() => {
+    const iso = toLocalISOWithOffsetFromInputs(dateStr, timeStr || '23:59');
+    return {
+      title: title || 'Evento',
+      deadlineISO: iso || new Date().toISOString(),
+      bgColor, textColor, accentColor,
+      logoPath: logoSrc ? `/media/${encodeURIComponent(logoSrc)}` : null
+    };
+  }, [title, dateStr, timeStr, bgColor, textColor, accentColor, logoSrc]);
+
+  const previewHtml = React.useMemo(() => makeDeadlineHtmlClient(cfg), [cfg]);
+
+  // Campo de cor com rótulo e input HEX
+  function ColorField({ label, value, onChange }) {
+    return (
+      <div className="field" style={{flexWrap:'wrap'}}>
+        <label className="field-label">{label}</label>
+        <div className="field-control" style={{display:'flex', gap:10, alignItems:'center', flexWrap:'wrap'}}>
+          <input
+            type="color"
+            value={value}
+            onChange={e => onChange(e.target.value)}
+            aria-label={label}
+            style={{ width:48, height:44, padding:0, border:'1px solid var(--border)', borderRadius:10 }}
+          />
+          <input
+            className="input"
+            value={value}
+            onChange={e => {
+              const v = e.target.value.trim();
+              // aceita #rgb, #rrggbb, ou sem # (adiciona)
+              const val = v.startsWith('#') ? v : ('#' + v);
+              onChange(val);
+            }}
+            placeholder="#000000"
+            style={{ maxWidth:160 }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  async function onSave(e){
+    e.preventDefault();
+    if (Object.keys(errors).length) {
+      alert('Preencha os campos obrigatórios.');
+      return;
+    }
+    const deadlineISO = toLocalISOWithOffsetFromInputs(dateStr, timeStr || '00:00');
+    const body = { title, deadlineISO, bgColor, textColor, accentColor };
+    if (filename) body.filename = filename.endsWith('.html') ? filename : (filename + '.html');
+    if (logoSrc)  body.logoSrc  = logoSrc;
+
+    const res = await fetch('/api/admin/deadline', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json' },
+      body: JSON.stringify(body)
+    });
+    const js = await res.json().catch(()=>({}));
+    if (!res.ok) return alert(js?.error || 'Falha ao criar deadline');
+
+    onCreated && onCreated(js.file);
+    refreshState && refreshState();
+    alert('Deadline criado: ' + js.file);
+  }
+
+  return (
+    <div className="card">
+      <h3 className="card-title">Novo Deadline</h3>
+
+      <div className="view-grid notice-grid">
+        {/* Formulário (segue o padrão claro do Admin) */}
+        <form className="form" onSubmit={onSave} autoComplete="off">
+          {/* Evento */}
+          <LabeledRow label="Nome do evento">
+            <div style={{width:'100%'}}>
+              <input
+                className="input"
+                value={title}
+                onChange={e=>setTitle(e.target.value)}
+                placeholder="Ex.: Submissão de trabalhos"
+                aria-invalid={errors.title ? 'true' : 'false'}
+              />
+              {errors.title && <div className="error" style={{marginTop:6}}>{errors.title}</div>}
+            </div>
+          </LabeledRow>
+
+          {/* Data e hora */}
+          <div className="field" style={{flexWrap:'wrap'}}>
+            <label className="field-label">Data e hora</label>
+            <div className="field-control" style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center'}}>
+              <div>
+                <input
+                  className="input"
+                  type="date"
+                  value={dateStr}
+                  onChange={e=>setDateStr(e.target.value)}
+                  aria-invalid={errors.dateStr ? 'true' : 'false'}
+                  style={{maxWidth:220}}
+                />
+                {errors.dateStr && <div className="error" style={{marginTop:6}}>{errors.dateStr}</div>}
+              </div>
+              <input
+                className="input"
+                type="time"
+                value={timeStr}
+                onChange={e=>setTimeStr(e.target.value)}
+                placeholder="HH:MM"
+                style={{maxWidth:160}}
+              />
+              <span className="muted" style={{fontSize:12}}>
+                (se vazio, assume 23:59)
+              </span>
+            </div>
+          </div>
+
+          {/* Cores */}
+          <ColorField label="Cor de fundo" value={bgColor} onChange={setBgColor} />
+          <ColorField label="Cor do texto" value={textColor} onChange={setTextColor} />
+          <ColorField label="Cor de destaque" value={accentColor} onChange={setAccentColor} />
+
+          {/* Logo */}
+          <div className="field" style={{flexWrap:'wrap'}}>
+            <label className="field-label">Logo (SVG opcional)</label>
+            <div className="field-control" style={{display:'flex', gap:10, alignItems:'center', flexWrap:'wrap'}}>
+              <select
+                className="input"
+                value={logoSrc}
+                onChange={e=>setLogoSrc(e.target.value)}
+                style={{minWidth:260, maxWidth:380}}
+              >
+                <option value="">(sem logo)</option>
+                {svgFiles.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              {logoSrc && (
+                <img
+                  src={`/media/${encodeURIComponent(logoSrc)}`}
+                  alt="preview logo"
+                  style={{ height:36, width:'auto', background:'#fff', border:'1px solid var(--border)', borderRadius:8, padding:4 }}
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Nome do arquivo */}
+          <LabeledRow label="Nome do arquivo (opcional)">
+            <input
+              className="input"
+              value={filename}
+              onChange={e=>setFilename(e.target.value)}
+              placeholder="ex.: deadline-feira.html (sem barras)"
+            />
+          </LabeledRow>
+
+          <div className="actions-row">
+            <button type="submit" className="btn" disabled={Object.keys(errors).length>0}>
+              Criar deadline
+            </button>
+            <span className="muted" style={{fontSize:12}}>
+              O arquivo será salvo em <code>/media/</code> e aparecerá no carrossel.
+            </span>
+          </div>
+        </form>
+
+        {/* Pré-visualização 16:9 (reutiliza estilos globais da página) */}
+        <div className="preview-card">
+          <div className="preview-header">
+            <strong>Pré-visualização 16:9</strong>
+            <span className="muted">(atualiza em tempo real)</span>
+          </div>
+          <div className="ratio-16x9">
+            <iframe className="preview-iframe" title="preview-deadline" srcDoc={previewHtml} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function onDeadlineCreated(fileName) {
+  // após criar o HTML, seleciona o arquivo e volta para a aba de mídias
+  setSelected(fileName);
+  setView('media');
+}
+
 
 export default function Admin() {
   const [auth, setAuth] = useState(false);
@@ -823,6 +1127,14 @@ export default function Admin() {
         {view === 'defaults' && renderDefaultsView()}
         {view === 'users'    && renderUsersView()}
         {view === 'password' && renderPasswordView()}
+        {view === 'deadline' && (
+          <DeadlineTab
+            files={files}
+            onCreated={onDeadlineCreated}
+            refreshState={refresh}
+          />
+        )}
+
       </main>
 
       <p className="footnote">

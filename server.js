@@ -510,6 +510,210 @@ app.post('/api/admin/html', requireAuth, async (req, res) => {
   }
 });
 
+// ---------- deadline HTML (standalone, sem parâmetros de URL) ----------
+function makeDeadlineHtml({
+  title = 'Evento',
+  // ISO com offset local, ex: 2025-10-01T18:00:00-03:00
+  deadlineISO,
+  bgColor = '#000000',
+  textColor = '#ffffff',
+  accentColor = '#22c55e',
+  fontFamily = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif'
+}) {
+  const cfg = {
+    title: String(title || 'Evento'),
+    deadlineISO: String(deadlineISO || new Date().toISOString()),
+    bgColor, textColor, accentColor, fontFamily
+  };
+  // Embute a CONFIG como JSON dentro do HTML; NADA é lido da URL.
+  const CFG_JSON = JSON.stringify(cfg);
+
+  return `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${cfg.title}</title>
+<style>
+  :root{
+    --bg:${cfg.bgColor};
+    --fg:${cfg.textColor};
+    --accent:${cfg.accentColor};
+  }
+  html,body{height:100%}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--fg);
+    font-family:${cfg.fontFamily};
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+  .wrap{
+    box-sizing:border-box;
+    width:100%;
+    max-width:1200px;
+    padding:24px;
+    text-align:center;
+  }
+  h1{
+    margin:0 0 12px;
+    font-size: clamp(20px, 4vw, 40px);
+    letter-spacing: .3px;
+  }
+  .when{
+    opacity:.85;
+    margin-bottom:20px;
+    font-size: clamp(14px, 2.4vw, 18px);
+  }
+  .clock{
+    display:flex; gap:14px; justify-content:center; align-items:stretch; flex-wrap:wrap;
+  }
+  .block{
+    background: rgba(255,255,255,.06);
+    border:1px solid rgba(255,255,255,.1);
+    border-radius:14px;
+    min-width:120px;
+    padding:16px 10px;
+  }
+  .num{
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    font-size: clamp(34px, 9vw, 84px);
+    font-weight: 800;
+    line-height: 1;
+    color: var(--accent);
+    text-shadow: 0 2px 14px rgba(34,197,94,.25);
+  }
+  .lab{
+    margin-top:8px;
+    font-size: clamp(12px, 2.2vw, 16px);
+    opacity: .85;
+  }
+  .done{
+    margin-top: 14px;
+    font-weight: 700;
+    color: var(--accent);
+    font-size: clamp(16px, 3.6vw, 22px);
+  }
+  * { cursor:none !important; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 id="t"></h1>
+    <div class="when" id="w"></div>
+    <div class="clock" id="c" hidden>
+      <div class="block"><div class="num" id="d">0</div><div class="lab">dias</div></div>
+      <div class="block"><div class="num" id="h">00</div><div class="lab">horas</div></div>
+      <div class="block"><div class="num" id="m">00</div><div class="lab">min</div></div>
+      <div class="block"><div class="num" id="s">00</div><div class="lab">seg</div></div>
+    </div>
+    <div class="done" id="done" hidden>Encerrado</div>
+  </div>
+
+  <script id="CFG" type="application/json">${CFG_JSON.replace(/</g,'\\u003c')}</script>
+  <script>
+  (function(){
+    const cfg = JSON.parse(document.getElementById('CFG').textContent);
+    const elT = document.getElementById('t');
+    const elW = document.getElementById('w');
+    const elC = document.getElementById('c');
+    const elD = document.getElementById('d');
+    const elH = document.getElementById('h');
+    const elM = document.getElementById('m');
+    const elS = document.getElementById('s');
+    const elDone = document.getElementById('done');
+
+    elT.textContent = cfg.title;
+
+    const dl = new Date(cfg.deadlineISO); // já vem com offset
+    // Mostra a data/hora local formatada
+    try{
+      const fmt = new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'full',
+        timeStyle: 'short'
+      });
+      elW.textContent = 'Prazo: ' + fmt.format(dl);
+    }catch{
+      elW.textContent = 'Prazo: ' + dl.toString();
+    }
+
+    function pad2(n){ n = Math.floor(n); return (n<10?'0':'') + n; }
+
+    function tick(){
+      const now = new Date();
+      let diff = dl.getTime() - now.getTime();
+      if (diff <= 0){
+        elC.hidden = true;
+        elDone.hidden = false;
+        return;
+      }
+      elC.hidden = false;
+      elDone.hidden = true;
+
+      const s = Math.floor(diff/1000);
+      const d = Math.floor(s / 86400);
+      const h = Math.floor((s % 86400) / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+
+      elD.textContent = d;
+      elH.textContent = pad2(h);
+      elM.textContent = pad2(m);
+      elS.textContent = pad2(sec);
+      requestAnimationFrame(()=>{}); // micro-yield
+    }
+
+    tick();
+    setInterval(tick, 1000);
+  })();
+  </script>
+</body>
+</html>`;
+}
+
+// Criar arquivo HTML de Deadline
+app.post('/api/admin/deadline', requireAuth, async (req, res) => {
+  try {
+    const {
+      title,
+      // string ISO com offset (ex: 2025-12-31T18:00:00-03:00)
+      deadlineISO,
+      filename, // opcional: ex: "deadline-feira.html"
+      bgColor = '#000000',
+      textColor = '#ffffff',
+      accentColor = '#22c55e',
+      fontFamily
+    } = req.body || {};
+
+    if (!title || !deadlineISO) {
+      return res.status(400).json({ error: 'missing title or deadlineISO' });
+    }
+
+    const baseName = sanitizeBasename(filename || '')
+      || `deadline-${Date.now()}.html`;
+    if (!isHtmlFile(baseName)) {
+      return res.status(400).json({ error: 'filename must end with .html' });
+    }
+
+    const html = makeDeadlineHtml({
+      title, deadlineISO, bgColor, textColor, accentColor, fontFamily
+    });
+
+    const dest = insideMedia(path.join(MEDIA_DIR, baseName));
+    await fs.writeFile(dest, html, 'utf8');
+
+    // pronto: já aparece no carrossel (pois lemos a pasta)
+    res.json({ ok: true, file: baseName });
+  } catch (err) {
+    console.error('deadline create error:', err);
+    res.status(500).json({ error: 'failed to create deadline html' });
+  }
+});
+
+
 // ---------- duplicar aviso HTML ----------
 app.post('/api/admin/duplicate', requireAuth, async (req, res) => {
   try {
